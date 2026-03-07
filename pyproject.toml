@@ -1,0 +1,42 @@
+[project]
+name = "json-schema-to-pydantic-rs"
+version = "0.1.0"
+description = "Fast JSON Schema to Pydantic v2 model generation, powered by Rust"
+license = { text = "MIT" }
+authors = [{ name = "GuillaumeSachet" }]
+keywords = ["json-schema", "pydantic", "validation", "schema", "rust"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pydantic>=2.10.4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-cov>=6.0", "maturin>=1.7"]
+
+[project.urls]
+Homepage = "https://github.com/GuillaumeSachet/json-schema-to-pydantic-rs"
+"Bug Tracker" = "https://github.com/GuillaumeSachet/json-schema-to-pydantic-rs/issues"
+
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "json_schema_to_pydantic_rs._core"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
