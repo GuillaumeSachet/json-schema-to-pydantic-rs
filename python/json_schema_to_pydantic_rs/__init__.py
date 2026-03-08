@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Type, TypeVar
 from pydantic import BaseModel
 
 from ._builder import build_model_from_def, resolve_python_type
+from ._builder_core import build_model_from_core
 from ._exceptions import CombinerError, ReferenceError, SchemaError, TypeError
 
 try:
@@ -79,8 +80,8 @@ class PydanticModelBuilder:
 
     def create_pydantic_model(
         self,
-        schema: Dict[str, Any],
-        root_schema: Optional[Dict[str, Any]] = None,
+        schema: Dict[str, Any] | str,
+        root_schema: Optional[Dict[str, Any] | str] = None,
         allow_undefined_array_items: bool = False,
         allow_undefined_type: bool = False,
         populate_by_name: bool = False,
@@ -97,26 +98,58 @@ class PydanticModelBuilder:
         Returns:
             A Pydantic model class.
         """
-        from ._core import process_json_schema
-
-        if root_schema is None:
-            root_schema = schema
-
         # Check for $ref that maps to a predefined model
-        ref_str = schema.get("$ref")
+        ref_str = schema.get("$ref") if isinstance(schema, dict) else None
         if ref_str and ref_str in self._model_cache:
             return self._model_cache[ref_str]
 
-        # Process through Rust core
+        # Pass schema as-is to Rust (accepts both str and dict)
+        # If caller passes a JSON string, Rust parses it directly via serde_json
+        # If caller passes a dict, Rust walks it via PyO3
+        schema_input = schema
+        root_input = root_schema if root_schema is not None else schema_input
+
+        # Use fast pydantic-core path for plain BaseModel,
+        # fall back to legacy path for custom base models
+        use_fast_path = self.base_model_type is BaseModel
+
+        if use_fast_path:
+            from ._core import process_json_schema_core
+
+            resolved = process_json_schema_core(
+                schema_input,
+                root_input,
+                allow_undefined_array_items,
+                allow_undefined_type,
+                populate_by_name,
+            )
+
+            kind = resolved.get("_kind")
+
+            if kind in ("model", "discriminated_union", "root_array", "root_scalar"):
+                model = build_model_from_core(
+                    resolved,
+                    models_ns=self._models_ns,
+                    base_model_type=self.base_model_type,
+                    populate_by_name=populate_by_name,
+                )
+
+                if ref_str:
+                    self._model_cache[ref_str] = model
+
+                return model
+
+        # Legacy path: process_json_schema + pydantic.create_model()
+        from ._core import process_json_schema
+
         resolved = process_json_schema(
-            schema,
-            root_schema,
+            schema_input,
+            root_input,
             allow_undefined_array_items,
             allow_undefined_type,
             populate_by_name,
         )
 
-        # Build the Pydantic model from the resolved type description
         kind = resolved["kind"]
 
         if kind == "nested_model":
@@ -141,24 +174,17 @@ class PydanticModelBuilder:
                 resolved, self._models_ns, populate_by_name=populate_by_name
             )
         elif kind in ("any_of", "one_of_union"):
-            # Returns a Union type, not a model - wrap for consistency
-            py_type = resolve_python_type(resolved, self._models_ns)
-            return py_type
+            return resolve_python_type(resolved, self._models_ns)
         elif kind == "one_of_literal":
-            py_type = resolve_python_type(resolved, self._models_ns)
-            return py_type
+            return resolve_python_type(resolved, self._models_ns)
         elif kind in ("root_array", "root_scalar"):
-            py_type = resolve_python_type(resolved, self._models_ns)
-            return py_type
+            return resolve_python_type(resolved, self._models_ns)
         else:
-            py_type = resolve_python_type(resolved, self._models_ns)
-            return py_type
+            return resolve_python_type(resolved, self._models_ns)
 
-        # Cache if this was a $ref
         if ref_str:
             self._model_cache[ref_str] = model
 
-        # Rebuild models to resolve forward references
         if self._models_ns:
             for m in self._models_ns.values():
                 if hasattr(m, "model_rebuild"):
@@ -171,9 +197,9 @@ class PydanticModelBuilder:
 
 
 def create_model(
-    schema: Dict[str, Any],
+    schema: Dict[str, Any] | str,
     base_model_type: Type[T] = BaseModel,
-    root_schema: Optional[Dict[str, Any]] = None,
+    root_schema: Optional[Dict[str, Any] | str] = None,
     allow_undefined_array_items: bool = False,
     allow_undefined_type: bool = False,
     populate_by_name: bool = False,

@@ -39,6 +39,15 @@ _FORMAT_TYPE_MAP: dict[str, type] = {
 }
 
 
+def _is_already_optional(tp: Any) -> bool:
+    """Return True if *tp* is already Optional (i.e. Union[..., None])."""
+    import typing
+    origin = getattr(tp, "__origin__", None)
+    if origin is Union:
+        return type(None) in typing.get_args(tp)
+    return False
+
+
 def resolve_python_type(type_desc: dict, models_ns: dict[str, type] | None = None) -> Any:
     """Convert a Rust type description dict to a Python type."""
     kind = type_desc["kind"]
@@ -74,6 +83,11 @@ def resolve_python_type(type_desc: dict, models_ns: dict[str, type] | None = Non
         if models_ns and name in models_ns:
             return models_ns[name]
         return name  # forward reference string
+
+    if kind == "dict":
+        key_t = resolve_python_type(type_desc["key_type"], models_ns)
+        val_t = resolve_python_type(type_desc["value_type"], models_ns)
+        return Dict[key_t, val_t]
 
     if kind == "forward_ref":
         return type_desc["name"]
@@ -159,6 +173,15 @@ def build_model_from_def(
     fields: dict[str, tuple] = {}
     for field_def in model_def.get("fields", []):
         field_type = resolve_python_type(field_def["python_type"], models_ns)
+        # Wrap non-required fields that default to None in Optional so that
+        # model_dump() -> model_validate() round-trips succeed.
+        if (
+            not field_def.get("required", True)
+            and field_def.get("default") is None
+            and field_type is not type(None)
+            and not _is_already_optional(field_type)
+        ):
+            field_type = Optional[field_type]
         field_info = build_field_info(field_def)
         fields[field_def["name"]] = (field_type, field_info)
 

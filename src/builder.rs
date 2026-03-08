@@ -70,29 +70,41 @@ fn process_schema_inner(
 
     // Handle combiners
     if let Some(all_of) = schema.get("allOf").and_then(|v| v.as_array()) {
-        return process_all_of(all_of, root_schema, opts, resolver, model_cache);
+        let result = process_all_of(all_of, root_schema, opts, resolver, model_cache);
+        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        return result;
     }
     if let Some(any_of) = schema.get("anyOf").and_then(|v| v.as_array()) {
-        return process_any_of(any_of, root_schema, opts, resolver, model_cache);
+        let result = process_any_of(any_of, root_schema, opts, resolver, model_cache);
+        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        return result;
     }
     if let Some(one_of) = schema.get("oneOf").and_then(|v| v.as_array()) {
-        return process_one_of(one_of, root_schema, opts, resolver, model_cache);
+        let result = process_one_of(one_of, root_schema, opts, resolver, model_cache);
+        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        return result;
     }
 
     // Handle top-level arrays
     if schema.get("type").and_then(|v| v.as_str()) == Some("array") {
-        return process_root_array(schema, root_schema, opts, resolver, model_cache, &owned_ref);
+        let result = process_root_array(schema, root_schema, opts, resolver, model_cache, &owned_ref);
+        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        return result;
     }
 
     // Handle top-level scalars
     let schema_type = schema.get("type");
     let is_scalar = is_scalar_schema(schema_type, schema);
     if is_scalar {
-        return process_root_scalar(schema, root_schema, opts, resolver, model_cache, &owned_ref);
+        let result = process_root_scalar(schema, root_schema, opts, resolver, model_cache, &owned_ref);
+        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        return result;
     }
 
     // Handle object schemas -> ModelDef
-    process_object_schema(schema, root_schema, opts, resolver, model_cache, &owned_ref)
+    let result = process_object_schema(schema, root_schema, opts, resolver, model_cache, &owned_ref);
+    if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+    result
 }
 
 fn is_scalar_schema(schema_type: Option<&Value>, schema: &Value) -> bool {
@@ -237,30 +249,31 @@ fn resolve_field_type(
 
     // Handle $ref
     if let Some(ref_str) = original_ref {
-        // Check for recursive reference
-        if model_cache.contains(ref_str) {
-            let name = if ref_str == "#" {
-                // Self-reference to root - use root schema title
-                root_schema
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("DynamicModel")
-                    .to_string()
-            } else {
-                ref_str.split('/').next_back().unwrap_or("DynamicModel").to_string()
-            };
-            return Ok(FieldType::ForwardRef(name));
-        }
-
-        model_cache.insert(ref_str.to_string());
-
         let resolved = resolver.resolve_ref(ref_str, root_schema)?;
 
-        // If it's an object with properties, process as nested model
-        if resolved.get("type").and_then(|v| v.as_str()) == Some("object")
-            && resolved.get("properties").is_some()
-        {
-            return process_object_schema(
+        // Only use cycle detection for object schemas (models), not scalars/enums
+        let is_object = resolved.get("type").and_then(|v| v.as_str()) == Some("object")
+            && resolved.get("properties").is_some();
+
+        if is_object {
+            // Check for recursive reference (currently being built)
+            if model_cache.contains(ref_str) {
+                let name = if ref_str == "#" {
+                    root_schema
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("DynamicModel")
+                        .to_string()
+                } else {
+                    ref_str.split('/').next_back().unwrap_or("DynamicModel").to_string()
+                };
+                return Ok(FieldType::ForwardRef(name));
+            }
+
+            // Mark as in-progress for cycle detection
+            model_cache.insert(ref_str.to_string());
+
+            let result = process_object_schema(
                 resolved,
                 root_schema,
                 opts,
@@ -268,9 +281,14 @@ fn resolve_field_type(
                 model_cache,
                 &Some(ref_str.to_string()),
             );
+
+            // Remove from in-progress set so sibling refs can resolve normally
+            model_cache.remove(ref_str);
+
+            return result;
         }
 
-        // Otherwise resolve the type from the resolved schema
+        // Non-object ref (enum, scalar, etc.) - resolve without cycle tracking
         return resolve_field_type(resolved, root_schema, opts, resolver, model_cache);
     }
 
@@ -295,6 +313,11 @@ fn resolve_field_type(
         && schema.get("properties").is_some()
     {
         return process_object_schema(schema, root_schema, opts, resolver, model_cache, &None);
+    }
+
+    // Handle typed dicts (object with additionalProperties schema)
+    if schema.get("type").and_then(|v| v.as_str()) == Some("object") {
+        return resolve_dict_type(schema, root_schema, opts, resolver, model_cache);
     }
 
     // Resolve scalar type
@@ -333,6 +356,31 @@ fn resolve_array_type(
         Ok(FieldType::Set(Box::new(item_type)))
     } else {
         Ok(FieldType::List(Box::new(item_type)))
+    }
+}
+
+fn resolve_dict_type(
+    schema: &Value,
+    root_schema: &Value,
+    opts: &ProcessOptions,
+    resolver: &mut ReferenceResolver,
+    model_cache: &mut HashSet<String>,
+) -> Result<FieldType, SchemaError> {
+    let additional = schema.get("additionalProperties");
+
+    match additional {
+        // additionalProperties: { "type": "..." } or other schema object
+        Some(Value::Object(_)) => {
+            let value_type = resolve_field_type(additional.unwrap(), root_schema, opts, resolver, model_cache)?;
+            Ok(FieldType::Dict {
+                key_type: Box::new(FieldType::Scalar("str".into())),
+                value_type: Box::new(value_type),
+            })
+        }
+        // additionalProperties: false means no extra keys (empty dict)
+        Some(Value::Bool(false)) => Ok(FieldType::Scalar("dict".into())),
+        // additionalProperties: true or absent => untyped dict
+        _ => Ok(FieldType::Scalar("dict".into())),
     }
 }
 
@@ -401,12 +449,35 @@ fn resolve_scalar_type(
         }
     }
 
+    // For object type, check additionalProperties for value typing
+    if schema_type == "object" {
+        if let Some(Value::Object(_)) = schema.get("additionalProperties") {
+            // We can't call resolve_field_type here (no resolver/model_cache),
+            // but we can handle simple type schemas inline
+            let additional = schema.get("additionalProperties").unwrap();
+            if let Some(t) = additional.get("type").and_then(|v| v.as_str()) {
+                let value_type = match t {
+                    "string" => FieldType::Scalar("str".into()),
+                    "integer" => FieldType::Scalar("int".into()),
+                    "number" => FieldType::Scalar("float".into()),
+                    "boolean" => FieldType::Scalar("bool".into()),
+                    "null" => FieldType::Scalar("None".into()),
+                    _ => FieldType::Scalar("Any".into()),
+                };
+                return Ok(FieldType::Dict {
+                    key_type: Box::new(FieldType::Scalar("str".into())),
+                    value_type: Box::new(value_type),
+                });
+            }
+        }
+        return Ok(FieldType::Scalar("dict".into()));
+    }
+
     Ok(match schema_type {
         "string" => FieldType::Scalar("str".into()),
         "integer" => FieldType::Scalar("int".into()),
         "number" => FieldType::Scalar("float".into()),
         "boolean" => FieldType::Scalar("bool".into()),
-        "object" => FieldType::Scalar("dict".into()),
         "null" => FieldType::Scalar("None".into()),
         _ => FieldType::Scalar("str".into()),
     })

@@ -1,12 +1,15 @@
 """Tests for allOf/anyOf/oneOf combiner handling."""
 
-from typing import Union
-
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from json_schema_to_pydantic_rs import PydanticModelBuilder
+from json_schema_to_pydantic_rs import PydanticModelBuilder, create_model
 from json_schema_to_pydantic_rs._exceptions import CombinerError
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# allOf
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 def test_all_of_merging():
@@ -72,6 +75,51 @@ def test_all_of_conflicting_constraints():
         model(value={"v": 80})
 
 
+def test_all_of_with_ref():
+    builder = PydanticModelBuilder()
+    schema = {
+        "type": "object",
+        "properties": {
+            "combined": {
+                "allOf": [
+                    {"$ref": "#/definitions/Base"},
+                    {
+                        "type": "object",
+                        "properties": {"extra": {"type": "string"}},
+                    },
+                ]
+            }
+        },
+        "definitions": {
+            "Base": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            }
+        },
+    }
+
+    model = builder.create_pydantic_model(schema)
+    instance = model(combined={"name": "John", "extra": "bonus"})
+    assert instance.combined.name == "John"
+    assert instance.combined.extra == "bonus"
+
+
+def test_empty_combiner_error():
+    builder = PydanticModelBuilder()
+    schema = {
+        "type": "object",
+        "properties": {"value": {"allOf": []}},
+    }
+    with pytest.raises(ValueError, match="allOf must contain at least one schema"):
+        builder.create_pydantic_model(schema)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# anyOf
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 def test_any_of_union():
     builder = PydanticModelBuilder()
     schema = {
@@ -90,6 +138,94 @@ def test_any_of_union():
 
     instance = model(value=42)
     assert instance.value == 42
+
+
+def test_anyof_nullable():
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "v": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+            },
+            "required": ["v"],
+        }
+    )
+    assert model(v="hello").v == "hello"
+    assert model(v=None).v is None
+
+
+def test_anyof_nullable_array():
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "null"},
+                    ]
+                }
+            },
+        }
+    )
+    assert model(items=["a", "b"]).items == ["a", "b"]
+    assert model(items=None).items is None
+
+
+def test_anyof_with_ref():
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "anyOf": [
+                        {"$ref": "#/$defs/Payload"},
+                        {"type": "null"},
+                    ]
+                }
+            },
+            "$defs": {
+                "Payload": {
+                    "type": "object",
+                    "properties": {"content": {"type": "string"}},
+                    "required": ["content"],
+                }
+            },
+        }
+    )
+    inst = model(data={"content": "hello"})
+    assert inst.data.content == "hello"
+    assert model(data=None).data is None
+
+
+def test_anyof_multiple_objects():
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "v": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}},
+                        },
+                        {
+                            "type": "object",
+                            "properties": {"id": {"type": "integer"}},
+                        },
+                    ]
+                }
+            },
+            "required": ["v"],
+        }
+    )
+    inst = model(v={"name": "Alice"})
+    assert inst.v.name == "Alice"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# oneOf
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 def test_one_of_discriminated():
@@ -123,12 +259,10 @@ def test_one_of_discriminated():
 
     model = builder.create_pydantic_model(schema)
 
-    # Test circle
     instance = model(shape={"type": "circle", "radius": 5.0})
     assert instance.shape.root.type == "circle"
     assert instance.shape.root.radius == 5.0
 
-    # Test rectangle
     instance = model(shape={"type": "rectangle", "width": 10.0, "height": 20.0})
     assert instance.shape.root.type == "rectangle"
     assert instance.shape.root.width == 10.0
@@ -221,41 +355,41 @@ def test_one_of_nested():
     assert instance.item.root.child.root.value == "test"
 
 
-def test_empty_combiner_error():
-    builder = PydanticModelBuilder()
-    schema = {
-        "type": "object",
-        "properties": {"value": {"allOf": []}},
-    }
-    with pytest.raises(ValueError, match="allOf must contain at least one schema"):
-        builder.create_pydantic_model(schema)
-
-
-def test_all_of_with_ref():
-    builder = PydanticModelBuilder()
-    schema = {
-        "type": "object",
-        "properties": {
-            "combined": {
-                "allOf": [
-                    {"$ref": "#/definitions/Base"},
-                    {
-                        "type": "object",
-                        "properties": {"extra": {"type": "string"}},
+def test_oneof_discriminated_with_refs():
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "oneOf": [
+                        {"$ref": "#/$defs/MessagePayload"},
+                        {"$ref": "#/$defs/PingPayload"},
+                    ]
+                }
+            },
+            "$defs": {
+                "MessagePayload": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"const": "message"},
+                        "text": {"type": "string"},
                     },
-                ]
-            }
-        },
-        "definitions": {
-            "Base": {
-                "type": "object",
-                "properties": {"name": {"type": "string"}},
-                "required": ["name"],
-            }
-        },
-    }
+                    "required": ["type", "text"],
+                },
+                "PingPayload": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"const": "ping"},
+                        "ts": {"type": "string"},
+                    },
+                    "required": ["type"],
+                },
+            },
+        }
+    )
+    inst = model(payload={"type": "message", "text": "hello"})
+    assert inst.payload.root.type == "message"
+    assert inst.payload.root.text == "hello"
 
-    model = builder.create_pydantic_model(schema)
-    instance = model(combined={"name": "John", "extra": "bonus"})
-    assert instance.combined.name == "John"
-    assert instance.combined.extra == "bonus"
+    inst = model(payload={"type": "ping", "ts": "2026-01-01"})
+    assert inst.payload.root.type == "ping"

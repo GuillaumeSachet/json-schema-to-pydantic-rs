@@ -28,6 +28,11 @@ pub struct ModelDef {
 pub enum FieldType {
     /// Simple scalar type: "str", "int", "float", "bool", "None", "Any"
     Scalar(String),
+    /// Dict with optional key/value types: Dict[key_type, value_type]
+    Dict {
+        key_type: Box<FieldType>,
+        value_type: Box<FieldType>,
+    },
     /// Format-specific type: "datetime", "date", "time", "uuid", "AnyUrl"
     Format(String),
     /// Literal type with values

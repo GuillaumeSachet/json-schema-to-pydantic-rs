@@ -13,6 +13,22 @@ pub fn build_constraints(schema: &Value) -> HashMap<String, Value> {
         None => return HashMap::new(),
     };
 
+    // For anyOf/oneOf with a single non-null branch (Pydantic's Optional pattern),
+    // extract constraints from that branch.
+    for combiner_key in &["anyOf", "oneOf"] {
+        if let Some(branches) = obj.get(*combiner_key).and_then(|v| v.as_array()) {
+            let non_null: Vec<&Value> = branches
+                .iter()
+                .filter(|b| {
+                    b.get("type").and_then(|t| t.as_str()) != Some("null")
+                })
+                .collect();
+            if non_null.len() == 1 {
+                return build_constraints(non_null[0]);
+            }
+        }
+    }
+
     let mut constraints = HashMap::new();
 
     // String constraints
