@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  VERSION: ${{ github.event.release.tag_name }}
+
 jobs:
   # Build wheels for Linux
   linux:
@@ -16,6 +19,11 @@ jobs:
         target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set version from tag
+        run: |
+          sed -i "s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml pyproject.toml
+          cargo generate-lockfile
 
       - uses: actions/setup-python@v5
         with:
@@ -46,6 +54,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set version from tag
+        run: |
+          sed -i '' "s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml pyproject.toml
+          cargo generate-lockfile
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -70,6 +83,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set version from tag
+        shell: bash
+        run: |
+          sed -i "s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml pyproject.toml
+          cargo generate-lockfile
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -89,6 +108,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set version from tag
+        run: |
+          sed -i "s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml pyproject.toml
+          cargo generate-lockfile
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
