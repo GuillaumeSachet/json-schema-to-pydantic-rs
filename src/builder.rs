@@ -16,7 +16,6 @@ pub struct ProcessOptions {
     pub populate_by_name: bool,
 }
 
-
 /// Main entry point: processes a raw JSON schema and returns a FieldType
 /// representing the full resolved structure.
 pub fn process_schema(
@@ -59,7 +58,11 @@ fn process_schema_inner(
                     .unwrap_or("DynamicModel")
                     .to_string()
             } else {
-                ref_key.split('/').next_back().unwrap_or("DynamicModel").to_string()
+                ref_key
+                    .split('/')
+                    .next_back()
+                    .unwrap_or("DynamicModel")
+                    .to_string()
             };
             return Ok(FieldType::ForwardRef(name));
         }
@@ -71,24 +74,33 @@ fn process_schema_inner(
     // Handle combiners
     if let Some(all_of) = schema.get("allOf").and_then(|v| v.as_array()) {
         let result = process_all_of(all_of, root_schema, opts, resolver, model_cache);
-        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        if let Some(ref ref_key) = owned_ref {
+            model_cache.remove(ref_key.as_str());
+        }
         return result;
     }
     if let Some(any_of) = schema.get("anyOf").and_then(|v| v.as_array()) {
         let result = process_any_of(any_of, root_schema, opts, resolver, model_cache);
-        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        if let Some(ref ref_key) = owned_ref {
+            model_cache.remove(ref_key.as_str());
+        }
         return result;
     }
     if let Some(one_of) = schema.get("oneOf").and_then(|v| v.as_array()) {
         let result = process_one_of(one_of, root_schema, opts, resolver, model_cache);
-        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        if let Some(ref ref_key) = owned_ref {
+            model_cache.remove(ref_key.as_str());
+        }
         return result;
     }
 
     // Handle top-level arrays
     if schema.get("type").and_then(|v| v.as_str()) == Some("array") {
-        let result = process_root_array(schema, root_schema, opts, resolver, model_cache, &owned_ref);
-        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        let result =
+            process_root_array(schema, root_schema, opts, resolver, model_cache, &owned_ref);
+        if let Some(ref ref_key) = owned_ref {
+            model_cache.remove(ref_key.as_str());
+        }
         return result;
     }
 
@@ -96,14 +108,20 @@ fn process_schema_inner(
     let schema_type = schema.get("type");
     let is_scalar = is_scalar_schema(schema_type, schema);
     if is_scalar {
-        let result = process_root_scalar(schema, root_schema, opts, resolver, model_cache, &owned_ref);
-        if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+        let result =
+            process_root_scalar(schema, root_schema, opts, resolver, model_cache, &owned_ref);
+        if let Some(ref ref_key) = owned_ref {
+            model_cache.remove(ref_key.as_str());
+        }
         return result;
     }
 
     // Handle object schemas -> ModelDef
-    let result = process_object_schema(schema, root_schema, opts, resolver, model_cache, &owned_ref);
-    if let Some(ref ref_key) = owned_ref { model_cache.remove(ref_key.as_str()); }
+    let result =
+        process_object_schema(schema, root_schema, opts, resolver, model_cache, &owned_ref);
+    if let Some(ref ref_key) = owned_ref {
+        model_cache.remove(ref_key.as_str());
+    }
     result
 }
 
@@ -132,7 +150,11 @@ fn process_object_schema(
 ) -> Result<FieldType, SchemaError> {
     let title = if let Some(ref_str) = owned_ref {
         if schema.get("title").is_none() {
-            ref_str.split('/').next_back().unwrap_or("DynamicModel").to_string()
+            ref_str
+                .split('/')
+                .next_back()
+                .unwrap_or("DynamicModel")
+                .to_string()
         } else {
             schema
                 .get("title")
@@ -265,7 +287,11 @@ fn resolve_field_type(
                         .unwrap_or("DynamicModel")
                         .to_string()
                 } else {
-                    ref_str.split('/').next_back().unwrap_or("DynamicModel").to_string()
+                    ref_str
+                        .split('/')
+                        .next_back()
+                        .unwrap_or("DynamicModel")
+                        .to_string()
                 };
                 return Ok(FieldType::ForwardRef(name));
             }
@@ -371,7 +397,13 @@ fn resolve_dict_type(
     match additional {
         // additionalProperties: { "type": "..." } or other schema object
         Some(Value::Object(_)) => {
-            let value_type = resolve_field_type(additional.unwrap(), root_schema, opts, resolver, model_cache)?;
+            let value_type = resolve_field_type(
+                additional.unwrap(),
+                root_schema,
+                opts,
+                resolver,
+                model_cache,
+            )?;
             Ok(FieldType::Dict {
                 key_type: Box::new(FieldType::Scalar("str".into())),
                 value_type: Box::new(value_type),
@@ -410,7 +442,9 @@ fn resolve_scalar_type(
     // Handle enum
     if let Some(enum_vals) = schema.get("enum").and_then(|v| v.as_array()) {
         if enum_vals.is_empty() {
-            return Err(SchemaError::Type("Enum must have at least one value".into()));
+            return Err(SchemaError::Type(
+                "Enum must have at least one value".into(),
+            ));
         }
         return Ok(FieldType::Literal(enum_vals.clone()));
     }
@@ -435,18 +469,18 @@ fn resolve_scalar_type(
     };
 
     // Handle string with format
-    if schema_type == "string" {
-        if let Some(fmt) = schema.get("format").and_then(|v| v.as_str()) {
-            return Ok(match fmt {
-                "date-time" => FieldType::Format("datetime".into()),
-                "date" => FieldType::Format("date".into()),
-                "time" => FieldType::Format("time".into()),
-                "email" => FieldType::Scalar("str".into()),
-                "uri" => FieldType::Format("AnyUrl".into()),
-                "uuid" => FieldType::Format("uuid".into()),
-                _ => FieldType::Scalar("str".into()),
-            });
-        }
+    if schema_type == "string"
+        && let Some(fmt) = schema.get("format").and_then(|v| v.as_str())
+    {
+        return Ok(match fmt {
+            "date-time" => FieldType::Format("datetime".into()),
+            "date" => FieldType::Format("date".into()),
+            "time" => FieldType::Format("time".into()),
+            "email" => FieldType::Scalar("str".into()),
+            "uri" => FieldType::Format("AnyUrl".into()),
+            "uuid" => FieldType::Format("uuid".into()),
+            _ => FieldType::Scalar("str".into()),
+        });
     }
 
     // For object type, check additionalProperties for value typing
@@ -569,8 +603,7 @@ fn process_all_of(
 
     let mut fields = Vec::new();
     for (name, prop_schema) in &merged_properties {
-        let field_type =
-            resolve_field_type(prop_schema, root_schema, opts, resolver, model_cache)?;
+        let field_type = resolve_field_type(prop_schema, root_schema, opts, resolver, model_cache)?;
         let (sanitized_name, alias) = sanitize_field_name(name, &property_names)?;
         let is_required = required_fields.contains(name);
 
@@ -658,9 +691,9 @@ fn process_one_of(
             .iter()
             .filter_map(|s| s.get("const").cloned())
             .collect();
-        let all_literal = values.iter().all(|v| {
-            v.is_string() || v.is_i64() || v.is_boolean() || v.is_null() || v.is_u64()
-        });
+        let all_literal = values
+            .iter()
+            .all(|v| v.is_string() || v.is_i64() || v.is_boolean() || v.is_null() || v.is_u64());
         if all_literal {
             return Ok(FieldType::OneOfLiteral(values));
         }
@@ -926,14 +959,14 @@ fn process_root_scalar(
 }
 
 fn get_model_name(schema: &Value, owned_ref: &Option<String>) -> String {
-    if let Some(ref_str) = owned_ref {
-        if schema.get("title").is_none() {
-            return ref_str
-                .split('/')
-                .next_back()
-                .unwrap_or("DynamicModel")
-                .to_string();
-        }
+    if let Some(ref_str) = owned_ref
+        && schema.get("title").is_none()
+    {
+        return ref_str
+            .split('/')
+            .next_back()
+            .unwrap_or("DynamicModel")
+            .to_string();
     }
     schema
         .get("title")
@@ -955,9 +988,7 @@ fn build_field_constraints(schema: &Value) -> HashMap<String, Value> {
                 let mut m = HashMap::new();
                 m.insert(
                     "pattern".into(),
-                    Value::String(
-                        r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".into(),
-                    ),
+                    Value::String(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".into()),
                 );
                 return m;
             }

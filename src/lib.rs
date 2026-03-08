@@ -11,7 +11,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use builder::{process_schema, ProcessOptions};
+use builder::{ProcessOptions, process_schema};
 use convert::field_type_to_py;
 use core_schema::field_type_to_core_schema;
 use pydict_to_value::pydict_to_value;
@@ -42,7 +42,8 @@ fn parse_input(input: &Bound<'_, pyo3::PyAny>) -> PyResult<serde_json::Value> {
             .map_err(|e| PyValueError::new_err(format!("Invalid JSON: {e}")));
     }
     // Fall back to dict (legacy path)
-    let dict = input.downcast::<PyDict>()
+    let dict = input
+        .downcast::<PyDict>()
         .map_err(|_| PyValueError::new_err("schema must be a JSON string or a dict"))?;
     pydict_to_value(dict).map_err(|e| PyValueError::new_err(e.to_string()))
 }

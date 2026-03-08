@@ -19,9 +19,7 @@ pub fn build_constraints(schema: &Value) -> HashMap<String, Value> {
         if let Some(branches) = obj.get(*combiner_key).and_then(|v| v.as_array()) {
             let non_null: Vec<&Value> = branches
                 .iter()
-                .filter(|b| {
-                    b.get("type").and_then(|t| t.as_str()) != Some("null")
-                })
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) != Some("null"))
                 .collect();
             if non_null.len() == 1 {
                 return build_constraints(non_null[0]);

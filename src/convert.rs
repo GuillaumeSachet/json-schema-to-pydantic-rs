@@ -62,10 +62,15 @@ pub fn field_type_to_py(py: Python<'_>, ft: &FieldType) -> PyObject {
             dict.set_item("kind", "scalar").unwrap();
             dict.set_item("name", name.as_str()).unwrap();
         }
-        FieldType::Dict { key_type, value_type } => {
+        FieldType::Dict {
+            key_type,
+            value_type,
+        } => {
             dict.set_item("kind", "dict").unwrap();
-            dict.set_item("key_type", field_type_to_py(py, key_type)).unwrap();
-            dict.set_item("value_type", field_type_to_py(py, value_type)).unwrap();
+            dict.set_item("key_type", field_type_to_py(py, key_type))
+                .unwrap();
+            dict.set_item("value_type", field_type_to_py(py, value_type))
+                .unwrap();
         }
         FieldType::Format(name) => {
             dict.set_item("kind", "format").unwrap();
@@ -141,7 +146,10 @@ pub fn field_type_to_py(py: Python<'_>, ft: &FieldType) -> PyObject {
                 let vdict = PyDict::new(py);
                 vdict.set_item("model_name", v.model_name.as_str()).unwrap();
                 vdict
-                    .set_item("discriminator_value", value_to_py(py, &v.discriminator_value))
+                    .set_item(
+                        "discriminator_value",
+                        value_to_py(py, &v.discriminator_value),
+                    )
                     .unwrap();
                 let fields_list = PyList::empty(py);
                 for f in &v.fields {
@@ -175,11 +183,8 @@ pub fn field_type_to_py(py: Python<'_>, ft: &FieldType) -> PyObject {
             dict.set_item("constraints", hashmap_to_py(py, constraints))
                 .unwrap();
             dict.set_item("name", name.as_str()).unwrap();
-            dict.set_item(
-                "description",
-                description.as_deref().unwrap_or(""),
-            )
-            .unwrap();
+            dict.set_item("description", description.as_deref().unwrap_or(""))
+                .unwrap();
             if description.is_none() {
                 dict.set_item("description", py.None()).unwrap();
             }

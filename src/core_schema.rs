@@ -42,17 +42,19 @@ fn value_to_py(py: Python<'_>, value: &Value) -> PyObject {
 }
 
 /// Build a pydantic-core schema dict for a FieldType.
-pub fn field_type_to_core_schema<'py>(
-    py: Python<'py>,
-    ft: &FieldType,
-) -> PyObject {
+pub fn field_type_to_core_schema<'py>(py: Python<'py>, ft: &FieldType) -> PyObject {
     match ft {
         FieldType::Scalar(name) => scalar_schema(py, name),
-        FieldType::Dict { key_type, value_type } => {
+        FieldType::Dict {
+            key_type,
+            value_type,
+        } => {
             let d = PyDict::new(py);
             d.set_item("type", "dict").unwrap();
-            d.set_item("keys_schema", field_type_to_core_schema(py, key_type)).unwrap();
-            d.set_item("values_schema", field_type_to_core_schema(py, value_type)).unwrap();
+            d.set_item("keys_schema", field_type_to_core_schema(py, key_type))
+                .unwrap();
+            d.set_item("values_schema", field_type_to_core_schema(py, value_type))
+                .unwrap();
             d.into_any().unbind()
         }
         FieldType::Format(name) => format_schema(py, name),
@@ -60,19 +62,22 @@ pub fn field_type_to_core_schema<'py>(
         FieldType::List(inner) => {
             let d = PyDict::new(py);
             d.set_item("type", "list").unwrap();
-            d.set_item("items_schema", field_type_to_core_schema(py, inner)).unwrap();
+            d.set_item("items_schema", field_type_to_core_schema(py, inner))
+                .unwrap();
             d.into_any().unbind()
         }
         FieldType::Set(inner) => {
             let d = PyDict::new(py);
             d.set_item("type", "set").unwrap();
-            d.set_item("items_schema", field_type_to_core_schema(py, inner)).unwrap();
+            d.set_item("items_schema", field_type_to_core_schema(py, inner))
+                .unwrap();
             d.into_any().unbind()
         }
         FieldType::Optional(inner) => {
             let d = PyDict::new(py);
             d.set_item("type", "nullable").unwrap();
-            d.set_item("schema", field_type_to_core_schema(py, inner)).unwrap();
+            d.set_item("schema", field_type_to_core_schema(py, inner))
+                .unwrap();
             d.into_any().unbind()
         }
         FieldType::Union(types) => union_schema(py, types),
@@ -86,23 +91,44 @@ pub fn field_type_to_core_schema<'py>(
             d.set_item("metadata", meta).unwrap();
             d.into_any().unbind()
         }
-        FieldType::NestedModel(model_def) => {
-            model_def_to_core_schema(py, model_def)
-        }
-        FieldType::AllOfModel(model_def) => {
-            model_def_to_core_schema(py, model_def)
-        }
+        FieldType::NestedModel(model_def) => model_def_to_core_schema(py, model_def),
+        FieldType::AllOfModel(model_def) => model_def_to_core_schema(py, model_def),
         FieldType::AnyOf(types) | FieldType::OneOfUnion(types) => union_schema(py, types),
         FieldType::OneOfLiteral(values) => literal_schema(py, values),
-        FieldType::OneOfDiscriminated { discriminator_field, variants } => {
-            discriminated_union_schema(py, discriminator_field, variants)
-        }
-        FieldType::RootArray { item_type, unique_items, constraints, name, description, json_schema_extra } => {
-            root_array_schema(py, item_type, *unique_items, constraints, name, description.as_deref(), json_schema_extra)
-        }
-        FieldType::RootScalar { scalar_type, constraints, name, description, json_schema_extra } => {
-            root_scalar_schema(py, scalar_type, constraints, name, description.as_deref(), json_schema_extra)
-        }
+        FieldType::OneOfDiscriminated {
+            discriminator_field,
+            variants,
+        } => discriminated_union_schema(py, discriminator_field, variants),
+        FieldType::RootArray {
+            item_type,
+            unique_items,
+            constraints,
+            name,
+            description,
+            json_schema_extra,
+        } => root_array_schema(
+            py,
+            item_type,
+            *unique_items,
+            constraints,
+            name,
+            description.as_deref(),
+            json_schema_extra,
+        ),
+        FieldType::RootScalar {
+            scalar_type,
+            constraints,
+            name,
+            description,
+            json_schema_extra,
+        } => root_scalar_schema(
+            py,
+            scalar_type,
+            constraints,
+            name,
+            description.as_deref(),
+            json_schema_extra,
+        ),
     }
 }
 
@@ -180,7 +206,9 @@ pub fn model_def_to_core_schema(py: Python<'_>, model: &ModelDef) -> PyObject {
 
         // Validation alias
         if let Some(ref alias) = field.alias {
-            field_dict.set_item("validation_alias", alias.as_str()).unwrap();
+            field_dict
+                .set_item("validation_alias", alias.as_str())
+                .unwrap();
         }
 
         fields.set_item(field.name.as_str(), field_dict).unwrap();
@@ -257,7 +285,9 @@ fn build_field_core_schema(py: Python<'_>, field: &FieldDef) -> PyObject {
         let wrapper = PyDict::new(py);
         wrapper.set_item("type", "default").unwrap();
         wrapper.set_item("schema", inner).unwrap();
-        wrapper.set_item("default", value_to_py(py, default)).unwrap();
+        wrapper
+            .set_item("default", value_to_py(py, default))
+            .unwrap();
         return wrapper.into_any().unbind();
     }
 
@@ -290,22 +320,22 @@ fn apply_constraints_to_union_choices(
             .and_then(|v| v.extract::<String>().ok());
 
         if schema_type.as_deref() == Some("union") {
-            if let Ok(Some(choices)) = dict.get_item("choices") {
-                if let Ok(list) = choices.downcast::<PyList>() {
-                    for item in list.iter() {
-                        if let Ok(choice_dict) = item.downcast::<PyDict>() {
-                            let choice_type = choice_dict
-                                .get_item("type")
-                                .ok()
-                                .flatten()
-                                .and_then(|v| v.extract::<String>().ok());
-                            // Skip null choices
-                            if choice_type.as_deref() != Some("none") {
-                                for (k, v) in constraints {
-                                    choice_dict
-                                        .set_item(k.as_str(), value_to_py(py, v))
-                                        .unwrap();
-                                }
+            if let Ok(Some(choices)) = dict.get_item("choices")
+                && let Ok(list) = choices.downcast::<PyList>()
+            {
+                for item in list.iter() {
+                    if let Ok(choice_dict) = item.downcast::<PyDict>() {
+                        let choice_type = choice_dict
+                            .get_item("type")
+                            .ok()
+                            .flatten()
+                            .and_then(|v| v.extract::<String>().ok());
+                        // Skip null choices
+                        if choice_type.as_deref() != Some("none") {
+                            for (k, v) in constraints {
+                                choice_dict
+                                    .set_item(k.as_str(), value_to_py(py, v))
+                                    .unwrap();
                             }
                         }
                     }
@@ -330,9 +360,9 @@ fn is_already_nullable(ft: &FieldType) -> bool {
     match ft {
         FieldType::Optional(_) => true,
         FieldType::Scalar(name) if name == "None" || name == "Any" => true,
-        FieldType::Union(types) | FieldType::AnyOf(types) | FieldType::OneOfUnion(types) => {
-            types.iter().any(|t| matches!(t, FieldType::Scalar(n) if n == "None"))
-        }
+        FieldType::Union(types) | FieldType::AnyOf(types) | FieldType::OneOfUnion(types) => types
+            .iter()
+            .any(|t| matches!(t, FieldType::Scalar(n) if n == "None")),
         _ => false,
     }
 }
@@ -361,13 +391,19 @@ fn discriminated_union_schema(
 ) -> PyObject {
     let result = PyDict::new(py);
     result.set_item("_kind", "discriminated_union").unwrap();
-    result.set_item("_discriminator_field", discriminator_field).unwrap();
+    result
+        .set_item("_discriminator_field", discriminator_field)
+        .unwrap();
 
     let variants_list = PyList::empty(py);
     for v in variants {
         let vd = PyDict::new(py);
         vd.set_item("model_name", v.model_name.as_str()).unwrap();
-        vd.set_item("discriminator_value", value_to_py(py, &v.discriminator_value)).unwrap();
+        vd.set_item(
+            "discriminator_value",
+            value_to_py(py, &v.discriminator_value),
+        )
+        .unwrap();
 
         let fields = PyDict::new(py);
         let fields_info = PyDict::new(py);
@@ -378,7 +414,9 @@ fn discriminated_union_schema(
             field_dict.set_item("type", "model-field").unwrap();
             field_dict.set_item("schema", field_core).unwrap();
             if let Some(ref alias) = field.alias {
-                field_dict.set_item("validation_alias", alias.as_str()).unwrap();
+                field_dict
+                    .set_item("validation_alias", alias.as_str())
+                    .unwrap();
             }
             fields.set_item(field.name.as_str(), field_dict).unwrap();
 
@@ -432,7 +470,9 @@ fn root_array_schema(
 
     // Apply array constraints
     for (k, v) in constraints {
-        array_schema.set_item(k.as_str(), value_to_py(py, v)).unwrap();
+        array_schema
+            .set_item(k.as_str(), value_to_py(py, v))
+            .unwrap();
     }
 
     result.set_item("_schema", array_schema).unwrap();
