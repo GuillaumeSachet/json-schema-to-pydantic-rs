@@ -3,7 +3,6 @@ from pydantic import BaseModel, Field, ValidationError
 
 from json_schema_to_pydantic_rs import (
     PydanticModelBuilder,
-    SchemaError,
     create_model,
 )
 
@@ -162,7 +161,9 @@ def test_predefined_models_validation_requires_subclass_of_configured_base():
     class DifferentBase(BaseModel):
         pass
 
-    with pytest.raises(ValueError, match="must be subclasses of the configured base_model_type"):
+    with pytest.raises(
+        ValueError, match="must be subclasses of the configured base_model_type"
+    ):
         PydanticModelBuilder(
             base_model_type=CustomBase,
             predefined_models={"#/definitions/Pet": DifferentBase},
@@ -328,7 +329,9 @@ def test_model_with_underscore_property(populate_by_name):
         instance = model(name="test2", age=30)
         assert instance.name == "test2"
     else:
-        with pytest.raises(ValidationError, match="1 validation error for TestModel\n_name"):
+        with pytest.raises(
+            ValidationError, match="1 validation error for TestModel\n_name"
+        ):
             model(name="test", age=25)
 
 

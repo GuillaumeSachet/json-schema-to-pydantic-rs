@@ -39,9 +39,7 @@ def test_deeply_nested():
                             "properties": {
                                 "level3": {
                                     "type": "object",
-                                    "properties": {
-                                        "value": {"type": "string"}
-                                    },
+                                    "properties": {"value": {"type": "string"}},
                                 }
                             },
                         }

@@ -71,9 +71,7 @@ def test_job_config():
         Model(priority="invalid")
 
     # Nested array of objects with typed dict
-    inst = Model(
-        steps=[{"stepId": "abc", "options": {"verbose": True}}]
-    )
+    inst = Model(steps=[{"stepId": "abc", "options": {"verbose": True}}])
     assert inst.steps[0].stepId == "abc"
     assert inst.steps[0].options == {"verbose": True}
 
@@ -231,9 +229,7 @@ def test_request_with_discriminated_unions_and_refs():
         )
 
     # Null rules
-    inst = Model(
-        payload={"kind": "text", "body": "test"}, rules=None
-    )
+    inst = Model(payload={"kind": "text", "body": "test"}, rules=None)
     assert inst.rules is None
 
 

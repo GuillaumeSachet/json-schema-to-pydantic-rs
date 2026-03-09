@@ -1,7 +1,6 @@
 """Tests for constraint extraction and validation."""
 
 import pytest
-from pydantic import BaseModel
 
 from json_schema_to_pydantic_rs import PydanticModelBuilder
 

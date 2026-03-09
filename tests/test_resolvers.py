@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime, date, time
 from uuid import UUID
 
-from pydantic import AnyUrl, BaseModel, ValidationError
+from pydantic import ValidationError
 
 from json_schema_to_pydantic_rs import PydanticModelBuilder, create_model
 
