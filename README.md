@@ -11,16 +11,16 @@ A high-performance drop-in replacement for [json-schema-to-pydantic](https://git
 
 ## Performance
 
-**5-10x faster** than the pure-Python original:
+**3-8x faster** than the pure-Python original:
 
 | Schema | Original | Rust | Speedup |
 |---|---|---|---|
-| Simple object (4 fields) | 993 us | 172 us | **5.8x** |
-| Nested 3 levels | 2.49 ms | 306 us | **8.1x** |
-| With `$ref` definitions | 1.59 ms | 164 us | **9.7x** |
-| oneOf / anyOf / allOf combiners | 2.88 ms | 656 us | **4.4x** |
-| Wide object (50 fields) | 2.37 ms | 354 us | **6.7x** |
-| Enums and arrays | 452 us | 69 us | **6.6x** |
+| Simple object (4 fields) | 1.00 ms | 178 us | **5.7x** |
+| Nested 3 levels | 2.42 ms | 280 us | **7.8x** |
+| With `$ref` definitions | 1.26 ms | 149 us | **8.4x** |
+| oneOf / anyOf / allOf / if-then-else | 2.38 ms | 752 us | **3.2x** |
+| Wide object (50 fields) | 2.40 ms | 365 us | **7.3x** |
+| Enums and arrays | 462 us | 71 us | **6.6x** |
 
 ## Installation
 
