@@ -1,10 +1,9 @@
-"""Tests for allOf/anyOf/oneOf combiner handling."""
+"""Tests for allOf/anyOf/oneOf/if-then-else combiner handling."""
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from json_schema_to_pydantic_rs import PydanticModelBuilder, create_model
-from json_schema_to_pydantic_rs._exceptions import CombinerError
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -124,11 +123,7 @@ def test_any_of_union():
     builder = PydanticModelBuilder()
     schema = {
         "type": "object",
-        "properties": {
-            "value": {
-                "anyOf": [{"type": "string"}, {"type": "integer"}]
-            }
-        },
+        "properties": {"value": {"anyOf": [{"type": "string"}, {"type": "integer"}]}},
         "required": ["value"],
     }
 
@@ -144,9 +139,7 @@ def test_anyof_nullable():
     model = create_model(
         {
             "type": "object",
-            "properties": {
-                "v": {"anyOf": [{"type": "string"}, {"type": "null"}]}
-            },
+            "properties": {"v": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
             "required": ["v"],
         }
     )
@@ -296,11 +289,7 @@ def test_one_of_simple_union():
     builder = PydanticModelBuilder()
     schema = {
         "type": "object",
-        "properties": {
-            "value": {
-                "oneOf": [{"type": "string"}, {"type": "integer"}]
-            }
-        },
+        "properties": {"value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
         "required": ["value"],
     }
 
@@ -349,7 +338,9 @@ def test_one_of_nested():
     }
 
     model = builder.create_pydantic_model(schema)
-    instance = model(item={"type": "parent", "child": {"type": "child1", "value": "test"}})
+    instance = model(
+        item={"type": "parent", "child": {"type": "child1", "value": "test"}}
+    )
     assert instance.item.root.type == "parent"
     assert instance.item.root.child.root.type == "child1"
     assert instance.item.root.child.root.value == "test"
@@ -393,3 +384,180 @@ def test_oneof_discriminated_with_refs():
 
     inst = model(payload={"type": "ping", "ts": "2026-01-01"})
     assert inst.payload.root.type == "ping"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# if / then / else
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_if_then_else_basic():
+    """Both branches are accepted; branch-only fields are optional."""
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "type": {"enum": ["residential", "business"]},
+                "address": {"type": "string"},
+            },
+            "required": ["type", "address"],
+            "if": {
+                "properties": {"type": {"const": "business"}},
+            },
+            "then": {
+                "properties": {"tax_id": {"type": "string"}},
+                "required": ["tax_id"],
+            },
+            "else": {
+                "properties": {"nickname": {"type": "string"}},
+            },
+        }
+    )
+
+    # Business branch — tax_id accepted
+    inst = model(type="business", address="123 Main St", tax_id="TX-123")
+    assert inst.tax_id == "TX-123"
+
+    # Residential branch — nickname accepted, tax_id optional
+    inst = model(type="residential", address="456 Oak Ave", nickname="home")
+    assert inst.nickname == "home"
+
+    # Both branch fields are optional (only required in one branch)
+    inst = model(type="residential", address="789 Elm St")
+    assert inst.tax_id is None
+    assert inst.nickname is None
+
+
+def test_if_then_only():
+    """if/then without else — then fields become optional."""
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "role": {"type": "string"},
+            },
+            "required": ["role"],
+            "if": {
+                "properties": {"role": {"const": "admin"}},
+            },
+            "then": {
+                "properties": {
+                    "permissions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+            },
+        }
+    )
+
+    inst = model(role="admin", permissions=["read", "write"])
+    assert inst.permissions == ["read", "write"]
+
+    # permissions is optional
+    inst = model(role="viewer")
+    assert inst.permissions is None
+
+
+def test_if_then_else_with_constraints():
+    """Constraints from branches are merged."""
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "category": {"enum": ["individual", "company"]},
+                "name": {"type": "string", "minLength": 1},
+            },
+            "required": ["category", "name"],
+            "if": {
+                "properties": {"category": {"const": "company"}},
+            },
+            "then": {
+                "properties": {
+                    "employee_count": {"type": "integer", "minimum": 1},
+                },
+                "required": ["employee_count"],
+            },
+            "else": {
+                "properties": {
+                    "age": {"type": "integer", "minimum": 0, "maximum": 150},
+                },
+            },
+        }
+    )
+
+    # Company
+    inst = model(category="company", name="Acme", employee_count=50)
+    assert inst.employee_count == 50
+
+    # Individual
+    inst = model(category="individual", name="Alice", age=30)
+    assert inst.age == 30
+
+    # Constraint validation still works
+    with pytest.raises(ValidationError):
+        model(category="individual", name="Bob", age=-1)
+
+
+def test_if_then_else_nested_field():
+    """if/then/else as a field-level sub-schema."""
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "contact": {
+                    "type": "object",
+                    "properties": {
+                        "method": {"enum": ["email", "phone"]},
+                    },
+                    "required": ["method"],
+                    "if": {
+                        "properties": {"method": {"const": "email"}},
+                    },
+                    "then": {
+                        "properties": {"email": {"type": "string"}},
+                        "required": ["email"],
+                    },
+                    "else": {
+                        "properties": {"phone": {"type": "string"}},
+                        "required": ["phone"],
+                    },
+                },
+            },
+            "required": ["contact"],
+        }
+    )
+
+    inst = model(contact={"method": "email", "email": "a@b.com"})
+    assert inst.contact.email == "a@b.com"
+
+    inst = model(contact={"method": "phone", "phone": "555-1234"})
+    assert inst.contact.phone == "555-1234"
+
+
+def test_if_then_else_required_in_both_branches():
+    """A field required in both then and else becomes required."""
+    model = create_model(
+        {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string"},
+            },
+            "required": ["mode"],
+            "if": {
+                "properties": {"mode": {"const": "a"}},
+            },
+            "then": {
+                "properties": {"shared": {"type": "string"}},
+                "required": ["shared"],
+            },
+            "else": {
+                "properties": {"shared": {"type": "string"}},
+                "required": ["shared"],
+            },
+        }
+    )
+
+    # shared is required (in both branches)
+    with pytest.raises(ValidationError):
+        model(mode="a")

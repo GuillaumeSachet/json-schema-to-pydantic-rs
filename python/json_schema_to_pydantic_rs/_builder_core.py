@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Union
 
 from pydantic import BaseModel
-from pydantic._internal._fields import PydanticMetadata
 from pydantic.fields import FieldInfo
 from pydantic_core import SchemaSerializer, SchemaValidator, core_schema as cs
 
@@ -100,7 +99,23 @@ def build_model_from_core(
     populate_by_name: bool = False,
     extra: str | None = None,
 ) -> type[BaseModel]:
-    """Build a Pydantic model from the output of process_json_schema_core()."""
+    """Build a Pydantic model from ``process_json_schema_core()`` output.
+
+    This is the fast path that constructs models using pydantic-core schemas
+    directly, avoiding the overhead of ``pydantic.create_model()``.
+
+    Args:
+        result: Dict returned by Rust ``process_json_schema_core()``, keyed by
+            ``_kind`` (one of ``model``, ``discriminated_union``, ``root_array``,
+            ``root_scalar``).
+        models_ns: Shared namespace for registering and resolving models.
+        base_model_type: Base class for generated models.
+        populate_by_name: Allow field access by both name and alias.
+        extra: Pydantic ``extra`` config (e.g. ``"forbid"``).
+
+    Returns:
+        A new Pydantic model class.
+    """
     if models_ns is None:
         models_ns = {}
 
@@ -123,6 +138,7 @@ def build_model_from_core(
     # For union/literal/scalar types that come back as plain core schema dicts,
     # fall back to the legacy builder
     from ._builder import resolve_python_type
+
     return resolve_python_type(result, models_ns)
 
 
@@ -186,8 +202,11 @@ def _resolve_inner_schema(
         model = _build_model_result(schema, models_ns, BaseModel, populate_by_name)
         # Return a model schema referencing the built class
         model_fields_schema = cs.model_fields_schema(
-            {fname: fschema for fname, fschema in schema.get("_fields", {}).items()
-             if not isinstance(fschema, dict) or fschema.get("_kind") is None}
+            {
+                fname: fschema
+                for fname, fschema in schema.get("_fields", {}).items()
+                if not isinstance(fschema, dict) or fschema.get("_kind") is None
+            }
         )
         return cs.model_schema(cls=model, schema=model_fields_schema)
 
@@ -336,7 +355,7 @@ def _build_root_array_result(
     json_extra = result.get("_json_schema_extra")
 
     # Resolve any nested models inside the array items
-    resolved = _resolve_inner_schema(inner_schema, models_ns)
+    inner_schema = _resolve_inner_schema(inner_schema, models_ns)
 
     namespace: dict[str, Any] = {}
     if description:
@@ -376,9 +395,18 @@ def _build_root_scalar_result(
 
     # Map core schema type to Python type for RootModel
     _type_map = {
-        "str": str, "int": int, "float": float, "bool": bool,
-        "none": type(None), "dict": dict, "any": Any,
-        "datetime": str, "date": str, "time": str, "url": str, "uuid": str,
+        "str": str,
+        "int": int,
+        "float": float,
+        "bool": bool,
+        "none": type(None),
+        "dict": dict,
+        "any": Any,
+        "datetime": str,
+        "date": str,
+        "time": str,
+        "url": str,
+        "uuid": str,
     }
     py_type = _type_map.get(inner_schema.get("type", "any"), Any)
 

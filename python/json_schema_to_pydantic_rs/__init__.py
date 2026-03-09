@@ -31,6 +31,13 @@ class PydanticModelBuilder:
         base_model_type: Type[T] = BaseModel,
         predefined_models: Optional[Dict[str, Type[BaseModel]]] = None,
     ):
+        """Initialize the builder.
+
+        Args:
+            base_model_type: Base class for generated models. Defaults to ``BaseModel``.
+            predefined_models: Mapping of local ``$ref`` strings (e.g.
+                ``"#/definitions/Foo"``) to existing Pydantic model classes.
+        """
         self.base_model_type = base_model_type
         validated = self._validate_predefined_models(predefined_models, base_model_type)
         self._model_cache: Dict[str, Type[BaseModel]] = dict(validated)

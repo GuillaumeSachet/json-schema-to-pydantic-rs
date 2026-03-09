@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Annotated, Any, Dict, List, Literal, Optional, Set, Type, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Set, Union
 from uuid import UUID
 
 from pydantic import (
@@ -16,7 +16,6 @@ from pydantic import (
     create_model,
 )
 
-from ._exceptions import CombinerError, SchemaError
 
 # Type mapping for scalar types
 _SCALAR_TYPE_MAP: dict[str, type] = {
@@ -42,14 +41,27 @@ _FORMAT_TYPE_MAP: dict[str, type] = {
 def _is_already_optional(tp: Any) -> bool:
     """Return True if *tp* is already Optional (i.e. Union[..., None])."""
     import typing
+
     origin = getattr(tp, "__origin__", None)
     if origin is Union:
         return type(None) in typing.get_args(tp)
     return False
 
 
-def resolve_python_type(type_desc: dict, models_ns: dict[str, type] | None = None) -> Any:
-    """Convert a Rust type description dict to a Python type."""
+def resolve_python_type(
+    type_desc: dict, models_ns: dict[str, type] | None = None
+) -> Any:
+    """Convert a Rust type-description dict into a Python type annotation.
+
+    Args:
+        type_desc: Dictionary produced by the Rust ``process_json_schema()`` call,
+            describing a type via its ``kind`` key.
+        models_ns: Shared namespace of already-built models, used to resolve
+            forward references and reuse named models.
+
+    Returns:
+        A Python type suitable for use as a Pydantic field annotation.
+    """
     kind = type_desc["kind"]
 
     if kind == "scalar":
@@ -100,9 +112,7 @@ def resolve_python_type(type_desc: dict, models_ns: dict[str, type] | None = Non
         return build_model_from_def(type_desc["model"], models_ns)
 
     if kind == "all_of_model":
-        return build_model_from_def(
-            type_desc["model"], models_ns, extra="forbid"
-        )
+        return build_model_from_def(type_desc["model"], models_ns, extra="forbid")
 
     if kind in ("any_of", "one_of_union"):
         types = tuple(resolve_python_type(t, models_ns) for t in type_desc["types"])
@@ -125,7 +135,7 @@ def resolve_python_type(type_desc: dict, models_ns: dict[str, type] | None = Non
 
 
 def build_field_info(field_def: dict) -> Field:
-    """Build a Pydantic Field from a field definition dict."""
+    """Build a Pydantic ``Field`` from a Rust field-definition dict."""
     kwargs: dict[str, Any] = {}
 
     # Add constraints
@@ -162,7 +172,19 @@ def build_model_from_def(
     base_model_type: type[BaseModel] = BaseModel,
     json_schema_extra_override: dict | None = None,
 ) -> type[BaseModel]:
-    """Build a Pydantic model from a Rust ModelDef dict."""
+    """Build a Pydantic model class from a Rust ``ModelDef`` dict.
+
+    Args:
+        model_def: Model definition dict with ``name``, ``fields``, etc.
+        models_ns: Shared namespace for registering built models.
+        extra: Pydantic ``extra`` config (e.g. ``"forbid"``).
+        populate_by_name: Allow field access by both name and alias.
+        base_model_type: Base class for the generated model.
+        json_schema_extra_override: Override for ``json_schema_extra`` config.
+
+    Returns:
+        A new Pydantic model class.
+    """
     if models_ns is None:
         models_ns = {}
 
@@ -220,7 +242,16 @@ def build_discriminated_union(
     models_ns: dict[str, type] | None = None,
     populate_by_name: bool = False,
 ) -> type[RootModel]:
-    """Build a discriminated union RootModel from oneOf type description."""
+    """Build a discriminated-union ``RootModel`` from a oneOf schema.
+
+    Args:
+        type_desc: Type description dict with ``discriminator_field`` and ``variants``.
+        models_ns: Shared namespace for registering variant models.
+        populate_by_name: Allow field access by both name and alias.
+
+    Returns:
+        A ``RootModel`` parameterized with the discriminated union type.
+    """
     if models_ns is None:
         models_ns = {}
 
@@ -260,7 +291,7 @@ def build_root_array(
     type_desc: dict,
     models_ns: dict[str, type] | None = None,
 ) -> type[RootModel]:
-    """Build a RootModel for top-level array schemas."""
+    """Build a ``RootModel`` for a top-level array schema."""
     item_type = resolve_python_type(type_desc["item_type"], models_ns)
     unique = type_desc.get("unique_items", False)
     constraints = type_desc.get("constraints", {})
@@ -290,7 +321,7 @@ def build_root_scalar(
     type_desc: dict,
     models_ns: dict[str, type] | None = None,
 ) -> type[RootModel]:
-    """Build a RootModel for top-level scalar schemas."""
+    """Build a ``RootModel`` for a top-level scalar schema."""
     scalar_type = resolve_python_type(type_desc["scalar_type"], models_ns)
     constraints = type_desc.get("constraints", {})
     name = type_desc.get("name", "DynamicModel")

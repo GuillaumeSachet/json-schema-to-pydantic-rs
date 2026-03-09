@@ -94,6 +94,17 @@ fn process_schema_inner(
         return result;
     }
 
+    // Handle if/then/else
+    if schema.get("if").is_some() && (schema.get("then").is_some() || schema.get("else").is_some())
+    {
+        let result =
+            process_if_then_else(schema, root_schema, opts, resolver, model_cache, &owned_ref);
+        if let Some(ref ref_key) = owned_ref {
+            model_cache.remove(ref_key.as_str());
+        }
+        return result;
+    }
+
     // Handle top-level arrays
     if schema.get("type").and_then(|v| v.as_str()) == Some("array") {
         let result =
@@ -327,6 +338,12 @@ fn resolve_field_type(
     }
     if let Some(one_of) = schema.get("oneOf").and_then(|v| v.as_array()) {
         return process_one_of(one_of, root_schema, opts, resolver, model_cache);
+    }
+
+    // Handle if/then/else
+    if schema.get("if").is_some() && (schema.get("then").is_some() || schema.get("else").is_some())
+    {
+        return process_if_then_else(schema, root_schema, opts, resolver, model_cache, &None);
     }
 
     // Handle arrays
@@ -639,6 +656,164 @@ fn process_all_of(
         description: None,
         fields,
         json_schema_extra: HashMap::new(),
+    })))
+}
+
+/// Flattens if/then/else into a single model by merging properties from both branches.
+/// Fields only required in one branch become optional in the final model.
+fn process_if_then_else(
+    schema: &Value,
+    root_schema: &Value,
+    opts: &ProcessOptions,
+    resolver: &mut ReferenceResolver,
+    model_cache: &mut HashSet<String>,
+    owned_ref: &Option<String>,
+) -> Result<FieldType, SchemaError> {
+    let title = get_model_name(schema, owned_ref);
+    let description = schema
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Start with base properties and required
+    let mut merged_properties: serde_json::Map<String, Value> = schema
+        .get("properties")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let base_required: HashSet<String> = schema
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Resolve then/else sub-schemas (handle $ref)
+    let then_schema = schema.get("then").and_then(|v| {
+        if let Some(ref_str) = v.get("$ref").and_then(|r| r.as_str()) {
+            resolver.resolve_ref(ref_str, root_schema).ok().cloned()
+        } else {
+            Some(v.clone())
+        }
+    });
+
+    let else_schema = schema.get("else").and_then(|v| {
+        if let Some(ref_str) = v.get("$ref").and_then(|r| r.as_str()) {
+            resolver.resolve_ref(ref_str, root_schema).ok().cloned()
+        } else {
+            Some(v.clone())
+        }
+    });
+
+    let mut then_required: HashSet<String> = HashSet::new();
+    let mut else_required: HashSet<String> = HashSet::new();
+
+    // Merge then branch
+    if let Some(ref then_s) = then_schema {
+        if let Some(props) = then_s.get("properties").and_then(|v| v.as_object()) {
+            for (name, prop_schema) in props {
+                if let Some(existing) = merged_properties.get(name) {
+                    let merged = merge_schema_constraints(existing, prop_schema);
+                    merged_properties.insert(name.clone(), merged);
+                } else {
+                    merged_properties.insert(name.clone(), prop_schema.clone());
+                }
+            }
+        }
+        if let Some(req) = then_s.get("required").and_then(|v| v.as_array()) {
+            for r in req {
+                if let Some(s) = r.as_str() {
+                    then_required.insert(s.to_string());
+                }
+            }
+        }
+    }
+
+    // Merge else branch
+    if let Some(ref else_s) = else_schema {
+        if let Some(props) = else_s.get("properties").and_then(|v| v.as_object()) {
+            for (name, prop_schema) in props {
+                if let Some(existing) = merged_properties.get(name) {
+                    let merged = merge_schema_constraints(existing, prop_schema);
+                    merged_properties.insert(name.clone(), merged);
+                } else {
+                    merged_properties.insert(name.clone(), prop_schema.clone());
+                }
+            }
+        }
+        if let Some(req) = else_s.get("required").and_then(|v| v.as_array()) {
+            for r in req {
+                if let Some(s) = r.as_str() {
+                    else_required.insert(s.to_string());
+                }
+            }
+        }
+    }
+
+    // A field is required if it's in the base required set,
+    // or required in BOTH then and else branches
+    let mut required_fields = base_required;
+    if then_schema.is_some() && else_schema.is_some() {
+        for field in then_required.intersection(&else_required) {
+            required_fields.insert(field.clone());
+        }
+    }
+
+    let property_names: HashSet<String> = merged_properties.keys().cloned().collect();
+
+    let mut fields = Vec::new();
+    for (name, prop_schema) in &merged_properties {
+        let field_type = resolve_field_type(prop_schema, root_schema, opts, resolver, model_cache)?;
+        let (sanitized_name, alias) = sanitize_field_name(name, &property_names)?;
+        let is_required = required_fields.contains(name);
+
+        let default = if prop_schema.get("default").is_some() {
+            prop_schema.get("default").cloned()
+        } else if !is_required {
+            Some(Value::Null)
+        } else {
+            None
+        };
+
+        let field_description = prop_schema
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let constraints = build_field_constraints(prop_schema);
+
+        fields.push(FieldDef {
+            name: sanitized_name,
+            python_type: field_type,
+            required: is_required,
+            default,
+            description: field_description,
+            alias,
+            constraints,
+            json_schema_extra: HashMap::new(),
+        });
+    }
+
+    let std_props = standard_model_properties();
+    let json_schema_extra: HashMap<String, Value> = schema
+        .as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter(|(k, _)| !std_props.contains(k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(FieldType::NestedModel(Box::new(ModelDef {
+        name: title,
+        description,
+        fields,
+        json_schema_extra,
     })))
 }
 

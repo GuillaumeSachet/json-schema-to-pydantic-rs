@@ -1,14 +1,14 @@
 class SchemaError(Exception):
-    """Base class for schema-related errors."""
+    """Raised when a JSON Schema is structurally invalid or cannot be processed."""
 
 
 class TypeError(SchemaError):
-    """Invalid or unsupported type."""
+    """Raised when a schema contains an invalid or unsupported type value."""
 
 
 class CombinerError(SchemaError):
-    """Error in schema combiners."""
+    """Raised when a schema combiner (allOf, anyOf, oneOf) cannot be resolved."""
 
 
 class ReferenceError(SchemaError):
-    """Error in schema references."""
+    """Raised when a ``$ref`` pointer cannot be resolved or contains a cycle."""

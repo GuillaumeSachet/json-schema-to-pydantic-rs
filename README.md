@@ -1,5 +1,10 @@
 # json-schema-to-pydantic-rs
 
+[![PyPI](https://img.shields.io/pypi/v/json-schema-to-pydantic-rs)](https://pypi.org/project/json-schema-to-pydantic-rs/)
+[![CI](https://github.com/GuillaumeSachet/json-schema-to-pydantic-rs/actions/workflows/test.yaml/badge.svg)](https://github.com/GuillaumeSachet/json-schema-to-pydantic-rs/actions/workflows/test.yaml)
+[![Python](https://img.shields.io/pypi/pyversions/json-schema-to-pydantic-rs)](https://pypi.org/project/json-schema-to-pydantic-rs/)
+[![License](https://img.shields.io/pypi/l/json-schema-to-pydantic-rs)](https://github.com/GuillaumeSachet/json-schema-to-pydantic-rs/blob/main/LICENSE)
+
 Fast JSON Schema to Pydantic v2 model generation, powered by Rust.
 
 A high-performance drop-in replacement for [json-schema-to-pydantic](https://github.com/richard-gyiko/json-schema-to-pydantic) using a Rust core via [PyO3](https://pyo3.rs).
