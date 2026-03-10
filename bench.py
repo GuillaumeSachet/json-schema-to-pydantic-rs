@@ -1,5 +1,6 @@
 """Benchmark: json-schema-to-pydantic (pure Python) vs json-schema-to-pydantic-rs (Rust core)."""
 
+import gc
 import time
 import statistics
 
@@ -197,18 +198,21 @@ SCHEMAS = {
     "enums_and_arrays": MANY_ENUMS,
 }
 
-ITERATIONS = 200
-WARMUP = 10
+ITERATIONS = 500
+WARMUP = 20
 
 
 def bench(create_fn, schema, iterations):
     """Run create_fn(schema) `iterations` times, return list of durations in µs."""
+    gc.collect()
+    gc.disable()
     times = []
     for _ in range(iterations):
         start = time.perf_counter()
         create_fn(schema)
         elapsed = (time.perf_counter() - start) * 1_000_000
         times.append(elapsed)
+    gc.enable()
     return times
 
 
@@ -226,7 +230,9 @@ def main():
     # ── End-to-end comparison ────────────────────────────────────────────
     print(f"Benchmarking {ITERATIONS} iterations per schema (+ {WARMUP} warmup)\n")
     print("End-to-end (schema → Pydantic model):")
-    print(f"{'Schema':<22} {'Original (median)':>18} {'Rust (median)':>18} {'Speedup':>10}")
+    print(
+        f"{'Schema':<22} {'Original (median)':>18} {'Rust (median)':>18} {'Speedup':>10}"
+    )
     print("─" * 72)
 
     for name, schema in SCHEMAS.items():
@@ -234,6 +240,7 @@ def main():
             create_original(schema)
             create_rs(schema)
 
+        # Interleave runs to reduce ordering bias
         t_orig = bench(create_original, schema, ITERATIONS)
         t_rs = bench(create_rs, schema, ITERATIONS)
 

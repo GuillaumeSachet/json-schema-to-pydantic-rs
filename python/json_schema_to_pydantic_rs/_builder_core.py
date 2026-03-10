@@ -2,11 +2,143 @@
 
 from __future__ import annotations
 
-from typing import Any, Union
+from datetime import date, datetime, time
+from typing import Annotated, Any, List, Literal, Optional, Set, Union
+from uuid import UUID
 
-from pydantic import BaseModel
+import annotated_types
+from pydantic import AnyUrl, BaseModel, Discriminator, RootModel
+from pydantic._internal._fields import _general_metadata_cls
 from pydantic.fields import FieldInfo
-from pydantic_core import SchemaSerializer, SchemaValidator, core_schema as cs
+from pydantic_core import (
+    PydanticUndefined,
+    SchemaSerializer,
+    SchemaValidator,
+    core_schema as cs,
+)
+
+_PydanticGeneralMetadata = _general_metadata_cls()
+
+_NoneType = type(None)
+
+# Map core schema type strings to Python types
+_CORE_TYPE_MAP: dict[str, type] = {
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "none": _NoneType,
+    "any": Any,
+    "dict": dict,
+    "datetime": datetime,
+    "date": date,
+    "time": time,
+    "uuid": UUID,
+    "url": AnyUrl,
+}
+
+# Map constraint names to annotated_types metadata constructors
+_CONSTRAINT_BUILDERS: dict[str, Any] = {
+    "gt": annotated_types.Gt,
+    "ge": annotated_types.Ge,
+    "lt": annotated_types.Lt,
+    "le": annotated_types.Le,
+    "multiple_of": annotated_types.MultipleOf,
+    "min_length": annotated_types.MinLen,
+    "max_length": annotated_types.MaxLen,
+}
+
+# FieldInfo slots that need defaults (pre-computed once)
+_FI_DEFAULTS: dict[str, Any] = {
+    "default": ...,  # PydanticUndefined equivalent — FieldInfo uses ... for required
+    "default_factory": None,
+    "alias": None,
+    "alias_priority": None,
+    "validation_alias": None,
+    "serialization_alias": None,
+    "title": None,
+    "field_title_generator": None,
+    "description": None,
+    "examples": None,
+    "exclude": None,
+    "discriminator": None,
+    "deprecated": None,
+    "json_schema_extra": None,
+    "frozen": None,
+    "validate_default": None,
+    "repr": True,
+    "init": None,
+    "init_var": None,
+    "kw_only": None,
+    "metadata": [],
+    "_attributes_set": set(),
+}
+
+# Check for newer FieldInfo slots (added in later pydantic versions)
+_FI_SLOTS = set(FieldInfo.__slots__) if hasattr(FieldInfo, "__slots__") else set()
+_FI_EXTRA_SLOTS = {
+    "exclude_if": None,
+    "_qualifiers": set(),
+    "_complete": True,
+    "_original_assignment": None,
+    "_original_annotation": None,
+    "_final": False,
+}
+
+
+def _annotation_from_descriptor(desc: Any, models_ns: dict[str, type]) -> Any:
+    """Resolve a Rust-emitted annotation descriptor to a Python type.
+
+    Descriptors are either:
+    - A string for simple types: "str", "int", "optional", etc.
+    - A tuple for compound types: ("optional", inner), ("list", inner), etc.
+    """
+    # Fast path: simple scalar string
+    if isinstance(desc, str):
+        return _CORE_TYPE_MAP.get(desc, Any)
+
+    # Compound type: tuple (tag, *args)
+    if isinstance(desc, tuple) and len(desc) >= 1:
+        tag = desc[0]
+
+        if tag == "optional":
+            inner = _annotation_from_descriptor(desc[1], models_ns)
+            return Optional[inner]
+
+        if tag == "list":
+            inner = _annotation_from_descriptor(desc[1], models_ns)
+            return List[inner]
+
+        if tag == "set":
+            inner = _annotation_from_descriptor(desc[1], models_ns)
+            return Set[inner]
+
+        if tag == "union":
+            types = tuple(_annotation_from_descriptor(d, models_ns) for d in desc[1:])
+            n = len(types)
+            if n == 1:
+                return types[0]
+            non_none = [t for t in types if t is not _NoneType]
+            if len(non_none) == n - 1 and len(non_none) == 1:
+                return Optional[non_none[0]]
+            return Union[types]
+
+        if tag == "literal":
+            values = desc[1:]
+            return Literal[values] if values else Any
+
+        if tag == "model":
+            name = desc[1]
+            return models_ns.get(name, Any)
+
+        if tag == "dict_typed":
+            from typing import Dict
+
+            key_t = _annotation_from_descriptor(desc[1], models_ns)
+            val_t = _annotation_from_descriptor(desc[2], models_ns)
+            return Dict[key_t, val_t]
+
+    return Any
 
 
 def _make_model(
@@ -20,7 +152,6 @@ def _make_model(
     extra: str | None = None,
 ) -> type[BaseModel]:
     """Build a BaseModel subclass using pydantic-core directly."""
-    # Create class without triggering ModelMetaclass processing
     namespace: dict[str, Any] = {
         "__module__": "json_schema_to_pydantic_rs._dynamic",
         "__qualname__": name,
@@ -28,11 +159,9 @@ def _make_model(
     }
     cls = type.__new__(type(base_model_type), name, (base_model_type,), namespace)
 
-    # Build core schema
     model_fields = cs.model_fields_schema(fields_schema)
     schema = cs.model_schema(cls=cls, schema=model_fields)
 
-    # Config
     config_kwargs: dict[str, Any] = {}
     if populate_by_name:
         config_kwargs["populate_by_name"] = True
@@ -70,26 +199,67 @@ def _make_model(
     return cls
 
 
-def _build_field_info(fi_dict: dict) -> FieldInfo:
-    """Build a FieldInfo from the Rust-provided field info dict."""
-    kwargs: dict[str, Any] = {}
+def _build_field_info(fi_dict: dict, annotation: Any = None) -> FieldInfo:
+    """Build a FieldInfo bypassing __init__ for speed."""
+    fi = FieldInfo.__new__(FieldInfo)
 
+    # Set all defaults first
+    fi.default = fi_dict.get("default", PydanticUndefined)
+    fi.default_factory = None
+    fi.alias = fi_dict.get("alias")
+    fi.alias_priority = 2 if "alias" in fi_dict else None
+    fi.validation_alias = None
+    fi.serialization_alias = None
+    fi.title = None
+    fi.field_title_generator = None
+    fi.description = fi_dict.get("description")
+    fi.examples = None
+    fi.exclude = None
+    fi.discriminator = None
+    fi.deprecated = None
+    fi.frozen = None
+    fi.validate_default = None
+    fi.repr = True
+    fi.init = None
+    fi.init_var = None
+    fi.kw_only = None
+    fi.annotation = annotation
+
+    # Build metadata from constraints (sorted for deterministic order)
+    constraints = fi_dict.get("constraints")
+    if constraints:
+        metadata = []
+        for key in sorted(constraints):
+            val = constraints[key]
+            builder = _CONSTRAINT_BUILDERS.get(key)
+            if builder is not None:
+                metadata.append(builder(val))
+            elif key == "pattern":
+                metadata.append(_PydanticGeneralMetadata({"pattern": val}))
+        fi.metadata = metadata
+    else:
+        fi.metadata = []
+
+    # json_schema_extra
+    jse = fi_dict.get("json_schema_extra")
+    fi.json_schema_extra = dict(jse) if jse else None
+
+    # _attributes_set tracks which kwargs were explicitly passed
+    attrs = set()
     if "default" in fi_dict:
-        kwargs["default"] = fi_dict["default"]
-
+        attrs.add("default")
     if "description" in fi_dict:
-        kwargs["description"] = fi_dict["description"]
-
+        attrs.add("description")
     if "alias" in fi_dict:
-        kwargs["alias"] = fi_dict["alias"]
+        attrs.add("alias")
+    fi._attributes_set = attrs
 
-    if "constraints" in fi_dict:
-        kwargs.update(fi_dict["constraints"])
+    # Set extra slots that may exist in newer pydantic versions
+    for slot, default in _FI_EXTRA_SLOTS.items():
+        if slot in _FI_SLOTS:
+            setattr(fi, slot, default)
 
-    if "json_schema_extra" in fi_dict:
-        kwargs["json_schema_extra"] = dict(fi_dict["json_schema_extra"])
-
-    return FieldInfo(**kwargs)
+    return fi
 
 
 def build_model_from_core(
@@ -158,12 +328,18 @@ def _resolve_nested_fields(
     for field_name, field_schema in fields_dict.items():
         fi_data = fields_info_dict.get(field_name, {})
 
-        # Check if the inner schema contains a nested model
         resolved_field = _resolve_field_schema(
             field_schema, models_ns, populate_by_name
         )
         core_fields[field_name] = resolved_field
-        py_fields_info[field_name] = _build_field_info(fi_data)
+
+        # Use Rust-emitted annotation descriptor (fast path)
+        ann_desc = fi_data.get("_annotation")
+        if ann_desc is not None:
+            annotation = _annotation_from_descriptor(ann_desc, models_ns)
+        else:
+            annotation = Any
+        py_fields_info[field_name] = _build_field_info(fi_data, annotation)
 
     return core_fields, py_fields_info
 
@@ -174,15 +350,15 @@ def _resolve_field_schema(
     populate_by_name: bool = False,
 ) -> dict:
     """Resolve a field schema, building nested models as needed."""
-    schema_type = field_schema.get("type")
+    if field_schema.get("type") != "model-field":
+        return field_schema
 
-    if schema_type == "model-field":
-        inner = field_schema.get("schema", {})
-        resolved_inner = _resolve_inner_schema(inner, models_ns, populate_by_name)
-        result = dict(field_schema)
-        result["schema"] = resolved_inner
-        return result
-
+    inner = field_schema.get("schema", {})
+    resolved_inner = _resolve_inner_schema(inner, models_ns, populate_by_name)
+    if resolved_inner is inner:
+        return field_schema
+    # Mutate in place — these dicts are per-call from Rust and not reused
+    field_schema["schema"] = resolved_inner
     return field_schema
 
 
@@ -198,9 +374,7 @@ def _resolve_inner_schema(
     kind = schema.get("_kind")
 
     if kind == "model":
-        # Nested model - build it
         model = _build_model_result(schema, models_ns, BaseModel, populate_by_name)
-        # Return a model schema referencing the built class
         model_fields_schema = cs.model_fields_schema(
             {
                 fname: fschema
@@ -212,7 +386,6 @@ def _resolve_inner_schema(
 
     if kind == "discriminated_union":
         model = _build_discriminated_union_result(schema, models_ns, populate_by_name)
-        # Return a simple model schema wrapping the union
         inner = cs.model_fields_schema({})
         return cs.model_schema(cls=model, schema=inner)
 
@@ -222,25 +395,25 @@ def _resolve_inner_schema(
     if schema_type == "default":
         inner = schema.get("schema", {})
         resolved = _resolve_inner_schema(inner, models_ns, populate_by_name)
-        result = dict(schema)
-        result["schema"] = resolved
-        return result
+        if resolved is not inner:
+            schema["schema"] = resolved
+        return schema
 
     # Handle nullable wrapper
     if schema_type == "nullable":
         inner = schema.get("schema", {})
         resolved = _resolve_inner_schema(inner, models_ns, populate_by_name)
-        result = dict(schema)
-        result["schema"] = resolved
-        return result
+        if resolved is not inner:
+            schema["schema"] = resolved
+        return schema
 
     # Handle list/set
-    if schema_type in ("list", "set"):
+    if schema_type == "list" or schema_type == "set":
         items = schema.get("items_schema", {})
         resolved = _resolve_inner_schema(items, models_ns, populate_by_name)
-        result = dict(schema)
-        result["items_schema"] = resolved
-        return result
+        if resolved is not items:
+            schema["items_schema"] = resolved
+        return schema
 
     # Handle union
     if schema_type == "union":
@@ -248,9 +421,8 @@ def _resolve_inner_schema(
         resolved_choices = [
             _resolve_inner_schema(c, models_ns, populate_by_name) for c in choices
         ]
-        result = dict(schema)
-        result["choices"] = resolved_choices
-        return result
+        schema["choices"] = resolved_choices
+        return schema
 
     return schema
 
@@ -276,7 +448,6 @@ def _build_model_result(
     description = result.get("_description")
     json_extra = result.get("_json_schema_extra")
 
-    # Recursively resolve nested models in fields
     core_fields, py_fields_info = _resolve_nested_fields(
         fields_dict, fields_info_dict, models_ns, populate_by_name
     )
@@ -302,10 +473,6 @@ def _build_discriminated_union_result(
     populate_by_name: bool = False,
 ) -> type:
     """Build a discriminated union from _kind=discriminated_union result."""
-    from typing import Annotated
-
-    from pydantic import Discriminator, RootModel
-
     disc_field = result["_discriminator_field"]
     variants = result.get("_variants", [])
 
@@ -345,16 +512,11 @@ def _build_root_array_result(
     models_ns: dict[str, type],
 ) -> type:
     """Build a RootModel for root_array results."""
-    from typing import List, Set
-
-    from pydantic import RootModel
-
     name = result.get("_name", "DynamicModel")
     description = result.get("_description")
     inner_schema = result.get("_schema", {})
     json_extra = result.get("_json_schema_extra")
 
-    # Resolve any nested models inside the array items
     inner_schema = _resolve_inner_schema(inner_schema, models_ns)
 
     namespace: dict[str, Any] = {}
@@ -363,10 +525,7 @@ def _build_root_array_result(
     if json_extra:
         namespace["model_config"] = {"json_schema_extra": dict(json_extra)}
 
-    # Use the schema type to determine list vs set
     is_set = inner_schema.get("type") == "set"
-    # We still need a Python type for RootModel
-    # Use Any as placeholder - the core schema handles validation
     if is_set:
         namespace["__annotations__"] = {"root": Set}
     else:
@@ -375,13 +534,27 @@ def _build_root_array_result(
     return type(name, (RootModel[list],), namespace)
 
 
+_ROOT_SCALAR_TYPE_MAP: dict[str, type] = {
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "none": _NoneType,
+    "dict": dict,
+    "any": Any,
+    "datetime": str,
+    "date": str,
+    "time": str,
+    "url": str,
+    "uuid": str,
+}
+
+
 def _build_root_scalar_result(
     result: dict,
     models_ns: dict[str, type],
 ) -> type:
     """Build a RootModel for root_scalar results."""
-    from pydantic import RootModel
-
     name = result.get("_name", "DynamicModel")
     description = result.get("_description")
     inner_schema = result.get("_schema", {})
@@ -393,22 +566,7 @@ def _build_root_scalar_result(
     if json_extra:
         namespace["model_config"] = {"json_schema_extra": dict(json_extra)}
 
-    # Map core schema type to Python type for RootModel
-    _type_map = {
-        "str": str,
-        "int": int,
-        "float": float,
-        "bool": bool,
-        "none": type(None),
-        "dict": dict,
-        "any": Any,
-        "datetime": str,
-        "date": str,
-        "time": str,
-        "url": str,
-        "uuid": str,
-    }
-    py_type = _type_map.get(inner_schema.get("type", "any"), Any)
+    py_type = _ROOT_SCALAR_TYPE_MAP.get(inner_schema.get("type", "any"), Any)
 
     namespace["__annotations__"] = {"root": py_type}
     return type(name, (RootModel[py_type],), namespace)

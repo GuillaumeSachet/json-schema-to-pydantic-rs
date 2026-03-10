@@ -182,6 +182,186 @@ fn union_schema(py: Python<'_>, types: &[FieldType]) -> PyObject {
     d.into_any().unbind()
 }
 
+/// Build a compact annotation descriptor from a FieldType.
+///
+/// Returns either:
+/// - A string for simple types: "str", "int", "float", "bool", "none", "any", "dict",
+///   "datetime", "date", "time", "uuid", "url"
+/// - A tuple for compound types: ("optional", inner), ("list", inner), ("set", inner),
+///   ("union", t1, t2, ...), ("literal", v1, v2, ...), ("model", "Name"),
+///   ("dict_typed", key_ann, val_ann)
+fn field_type_to_annotation(py: Python<'_>, ft: &FieldType) -> PyObject {
+    use pyo3::types::PyTuple;
+
+    match ft {
+        FieldType::Scalar(name) => {
+            let tag = match name.as_str() {
+                "str" => "str",
+                "int" => "int",
+                "float" => "float",
+                "bool" => "bool",
+                "None" => "none",
+                "Any" => "any",
+                "dict" => "dict",
+                _ => "str",
+            };
+            tag.into_pyobject(py).unwrap().into_any().unbind()
+        }
+        FieldType::Format(name) => {
+            let tag = match name.as_str() {
+                "datetime" => "datetime",
+                "date" => "date",
+                "time" => "time",
+                "uuid" => "uuid",
+                "AnyUrl" => "url",
+                _ => "str",
+            };
+            tag.into_pyobject(py).unwrap().into_any().unbind()
+        }
+        FieldType::Optional(inner) => {
+            let inner_ann = field_type_to_annotation(py, inner);
+            PyTuple::new(
+                py,
+                &[
+                    "optional".into_pyobject(py).unwrap().into_any().unbind(),
+                    inner_ann,
+                ],
+            )
+            .unwrap()
+            .into_any()
+            .unbind()
+        }
+        FieldType::List(inner) => {
+            let inner_ann = field_type_to_annotation(py, inner);
+            PyTuple::new(
+                py,
+                &[
+                    "list".into_pyobject(py).unwrap().into_any().unbind(),
+                    inner_ann,
+                ],
+            )
+            .unwrap()
+            .into_any()
+            .unbind()
+        }
+        FieldType::Set(inner) => {
+            let inner_ann = field_type_to_annotation(py, inner);
+            PyTuple::new(
+                py,
+                &[
+                    "set".into_pyobject(py).unwrap().into_any().unbind(),
+                    inner_ann,
+                ],
+            )
+            .unwrap()
+            .into_any()
+            .unbind()
+        }
+        FieldType::Union(types) | FieldType::AnyOf(types) | FieldType::OneOfUnion(types) => {
+            let mut elems: Vec<PyObject> =
+                vec!["union".into_pyobject(py).unwrap().into_any().unbind()];
+            for t in types {
+                elems.push(field_type_to_annotation(py, t));
+            }
+            PyTuple::new(py, &elems).unwrap().into_any().unbind()
+        }
+        FieldType::Literal(values) | FieldType::OneOfLiteral(values) => {
+            let mut elems: Vec<PyObject> =
+                vec!["literal".into_pyobject(py).unwrap().into_any().unbind()];
+            for v in values {
+                elems.push(value_to_py(py, v));
+            }
+            PyTuple::new(py, &elems).unwrap().into_any().unbind()
+        }
+        FieldType::NestedModel(model_def) | FieldType::AllOfModel(model_def) => PyTuple::new(
+            py,
+            &[
+                "model".into_pyobject(py).unwrap().into_any().unbind(),
+                model_def
+                    .name
+                    .as_str()
+                    .into_pyobject(py)
+                    .unwrap()
+                    .into_any()
+                    .unbind(),
+            ],
+        )
+        .unwrap()
+        .into_any()
+        .unbind(),
+        FieldType::ForwardRef(name) => PyTuple::new(
+            py,
+            &[
+                "model".into_pyobject(py).unwrap().into_any().unbind(),
+                name.as_str().into_pyobject(py).unwrap().into_any().unbind(),
+            ],
+        )
+        .unwrap()
+        .into_any()
+        .unbind(),
+        FieldType::Dict {
+            key_type,
+            value_type,
+        } => {
+            let key_ann = field_type_to_annotation(py, key_type);
+            let val_ann = field_type_to_annotation(py, value_type);
+            PyTuple::new(
+                py,
+                &[
+                    "dict_typed".into_pyobject(py).unwrap().into_any().unbind(),
+                    key_ann,
+                    val_ann,
+                ],
+            )
+            .unwrap()
+            .into_any()
+            .unbind()
+        }
+        FieldType::OneOfDiscriminated { .. } => {
+            "any".into_pyobject(py).unwrap().into_any().unbind()
+        }
+        FieldType::RootArray { .. } | FieldType::RootScalar { .. } => {
+            "any".into_pyobject(py).unwrap().into_any().unbind()
+        }
+    }
+}
+
+/// Helper to build the FieldInfo dict for a single field.
+fn build_field_info_dict(py: Python<'_>, field: &FieldDef) -> PyObject {
+    let fi = PyDict::new(py);
+    fi.set_item("required", field.required).unwrap();
+    if let Some(ref default) = field.default {
+        fi.set_item("default", value_to_py(py, default)).unwrap();
+    }
+    if let Some(ref desc) = field.description {
+        fi.set_item("description", desc.as_str()).unwrap();
+    }
+    if let Some(ref alias) = field.alias {
+        fi.set_item("alias", alias.as_str()).unwrap();
+    }
+    if !field.constraints.is_empty() {
+        let c = PyDict::new(py);
+        for (k, v) in &field.constraints {
+            c.set_item(k.as_str(), value_to_py(py, v)).unwrap();
+        }
+        fi.set_item("constraints", c).unwrap();
+    }
+    if !field.json_schema_extra.is_empty() {
+        let extra = PyDict::new(py);
+        for (k, v) in &field.json_schema_extra {
+            extra.set_item(k.as_str(), value_to_py(py, v)).unwrap();
+        }
+        fi.set_item("json_schema_extra", extra).unwrap();
+    }
+    // Annotation descriptor for fast Python-side type resolution
+    fi.set_item(
+        "_annotation",
+        field_type_to_annotation(py, &field.python_type),
+    )
+    .unwrap();
+    fi.into_any().unbind()
+}
+
 /// Build a model-fields + model core schema from a ModelDef.
 /// Returns a dict with keys: _model_schema, _fields_info, _model_name, _description, _json_schema_extra
 /// The Python layer will use this to construct the class and validators.
@@ -212,34 +392,9 @@ pub fn model_def_to_core_schema(py: Python<'_>, model: &ModelDef) -> PyObject {
         }
 
         fields.set_item(field.name.as_str(), field_dict).unwrap();
-
-        // Build FieldInfo metadata for the Python layer
-        let fi = PyDict::new(py);
-        fi.set_item("required", field.required).unwrap();
-        if let Some(ref default) = field.default {
-            fi.set_item("default", value_to_py(py, default)).unwrap();
-        }
-        if let Some(ref desc) = field.description {
-            fi.set_item("description", desc.as_str()).unwrap();
-        }
-        if let Some(ref alias) = field.alias {
-            fi.set_item("alias", alias.as_str()).unwrap();
-        }
-        if !field.constraints.is_empty() {
-            let c = PyDict::new(py);
-            for (k, v) in &field.constraints {
-                c.set_item(k.as_str(), value_to_py(py, v)).unwrap();
-            }
-            fi.set_item("constraints", c).unwrap();
-        }
-        if !field.json_schema_extra.is_empty() {
-            let extra = PyDict::new(py);
-            for (k, v) in &field.json_schema_extra {
-                extra.set_item(k.as_str(), value_to_py(py, v)).unwrap();
-            }
-            fi.set_item("json_schema_extra", extra).unwrap();
-        }
-        fields_info.set_item(field.name.as_str(), fi).unwrap();
+        fields_info
+            .set_item(field.name.as_str(), build_field_info_dict(py, field))
+            .unwrap();
     }
 
     result.set_item("_fields", fields).unwrap();
@@ -419,19 +574,9 @@ fn discriminated_union_schema(
                     .unwrap();
             }
             fields.set_item(field.name.as_str(), field_dict).unwrap();
-
-            let fi = PyDict::new(py);
-            fi.set_item("required", field.required).unwrap();
-            if let Some(ref default) = field.default {
-                fi.set_item("default", value_to_py(py, default)).unwrap();
-            }
-            if let Some(ref desc) = field.description {
-                fi.set_item("description", desc.as_str()).unwrap();
-            }
-            if let Some(ref alias) = field.alias {
-                fi.set_item("alias", alias.as_str()).unwrap();
-            }
-            fields_info.set_item(field.name.as_str(), fi).unwrap();
+            fields_info
+                .set_item(field.name.as_str(), build_field_info_dict(py, field))
+                .unwrap();
         }
 
         vd.set_item("fields", fields).unwrap();
